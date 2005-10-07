@@ -77,7 +77,13 @@ do
 	  c) chan_num="$OPTARG" ;;
 	  f) call_from="$OPTARG" ;;
 		# I assume all phone are on context 'default':
-		F) call_from="Local/$OPTARG@default" ;;
+		F)
+      tmp=`echo $OPTARG | tr A-Z a-z | tr -c -d @0-9a-z-` # basic sanitation
+      if echo $OPTARG | grep -q @ # if it has an extension part:
+      then call_from="Local/$tmp"
+      else call_from="Local/$tmp@default"
+      fi
+      ;;
 		p) pass="$OPTARG" ;;
 	  t) call_to="$OPTARG" ;;
 		s) server="$OPTARG" ;;
@@ -88,9 +94,10 @@ shift $(($OPTIND -1))
 
 
 call_file() {
-  if [ -z "$call_from" ] || [ "$call_from" = "Local/@default" ] || [ -z "$call_to" ]
+  if [ "$call_from" = '' ] || [ "$call_from" = "Local/@default" ] \
+     || [ "$call_from" = "Local/" ] || [ "$call_to" = '' ]
 	then
-	  echo >&2 "parameters -f and -t are required."
+	  echo >&2 "parameters -f/-F and -t are required."
 		usage
 		exit 3
 	fi
@@ -419,6 +426,15 @@ print_codecs() {
 	esac
 }
 
+# Make a file asterisk.asterisk 660 . Actually: set the user and group 
+# according to the ownership of /etc/asterisk .
+#
+# Input: a list of files for which to fix modes.
+secure_modes() {
+  chown --reference=/etc/asterisk "$@"
+  chmod 0660 "$@"
+}
+
 basic_mail_conf() {
 	new_smtp=$1
 	# The domain from resolv.conf
@@ -621,6 +637,18 @@ case "$1" in
 			server=proxy01.sipphone.com
 			type=sip
 			;;
+    junction)
+      server_type=$server
+      server=iax.jnctn.net
+      type=iax
+			if [ ! -f /var/lib/asterisk/keys/jnctn.pub ]
+			then
+				echo >&2 "Rapid does not yet include the public key of Junction Networks"
+				echo >&2 "To install it use:"
+				echo >&2 ""
+				echo >&2 "cd /var/lib/asterisk/keys; wget wget http://www.jnctn.net/jnctn.pub"
+			fi
+      ;;
 		sip:*)
 			type=sip
 			server_type=custom-sip
@@ -633,9 +661,10 @@ case "$1" in
 			;;
 		*) 
 			echo >&2 "Server name should be on of:"
-			echo >&2 "  fwd"
-			echo >&2 "  sipphone"
-			echo >&2 "  voipgate"
+			echo >&2 "  fwd                  (Free World Dialup/IAX)"
+			echo >&2 "  sipphone             (SipPhone)"
+			echo >&2 "  voipgate             (VoipGate)"
+			echo >&2 "  junction             (Junction Networks/IAX)"
 			echo >&2 "  sip:hostname_or_ip"
 			echo >&2 "  iax:hostname_or_ip"
 			;;
@@ -674,7 +703,7 @@ case "$1" in
 		#	>"$CFG_DIR/$type-reg.d/trunk-$name.conf"
 		echo "register => $user:$pass@$server$call_to_text" \
 			>"$CFG_DIR/$type-reg.d/trunk-$name.conf"
-			
+		secure_modes "$CFG_DIR/$type-reg.d/trunk-$name.conf"
 		(
 			echo "[trunk-$name]"
 			echo "type=peer"
@@ -690,23 +719,40 @@ case "$1" in
 			fi
 		) >$CFG_DIR/$type-phones.d/trunk-$name.conf
 		in_name=$user
-		if [ "$server_type" = 'fwd' ]; then in_name=iaxfwd; fi
+		if [ "$server_type" = 'fwd' ];      then rsa_name=iaxfwd; fi
+		if [ "$server_type" = 'junction' ]; then rsa_name=jnctn; fi
 		# for FWD: in_name=iaxfwd , and auth=rsa
 		(
-			echo "[$in_name]"
-			echo ";This allows $name to place incoming calls to you"
-			echo "type=friend"
+			echo "[trunk-$name]"
+			echo "type=peer"
 			echo "host=$server"
-			echo "username=$in_name"
-			if [ "$server_type" = 'fwd' ]; then
-				echo "auth=rsa"
-			else
-				echo "secret=$pass"
+			echo "username=$user"
+			echo "secret=$pass"
+			print_codecs $server_type
+			echo ";qualify=300"
+			echo ";externip=1.2.3.4"
+			if [ "$type" = 'sip' ]; then
+				echo "canreinvite=no"
 			fi
+      echo ''
+			echo "[$user]"
+			echo ";This allows $name to place incoming calls to you"
+			echo "type=user"
+			echo "context=from-$name"
+			#echo "username=$in_name"
+			case "$server_type" in fwd|junction)
+				echo "auth=rsa"
+				echo "in_keys=$rsa_name"
+				;;
+			*)
+				echo "secret=$pass";;
+			esac
+			
 			echo "fromdomain=$server"
 			echo ";insecure=very"
 			print_codecs $server_type
-		) >$CFG_DIR/$type-phones.d/$in_name.conf
+		) >$CFG_DIR/$type-phones.d/$user.conf
+		secure_modes $CFG_DIR/$type-phones.d/$user.conf
 		chan_type=`echo $type| tr a-z A-Z`
 		prefix_len=`echo -n $call_from | wc -c`
 		case "$type" in sip)chan_type=SIP;;iax)chan_type=IAX2;;esac

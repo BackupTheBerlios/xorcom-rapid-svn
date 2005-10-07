@@ -82,8 +82,18 @@ from mail spool
 options:
 
   -f FROM_CHANNEL
-  -F FROM_EXTEN (-f or -F is required)
-  -t TO_EXTENSTION (required)
+  -F FROM_EXTEN (-f or -F is required). Context is 'default' if ommited.
+  -t TO_EXTENSTION (required). Context is 'default' if ommited.
+
+Generates a call from a specified channel or extension to a specific 
+extension. If the source is an extension, the call is genrated from a 
+Local channel.
+
+This generates a call file and drops it into Asterisk's outgoing spool.
+Thus it only requires write access there. E.g: to generate a call echo-test 
+call to phone 501:
+
+  ast-cmd -F 200 -t 501 call
 
 .B inst-cfg 
 options:
@@ -207,8 +217,20 @@ you can use the command:
 
   ast-cmd -f \fIprefix\fR -u \fIuser\fR -p \fIpassword\fR -s voipgate add-trunk \fRname\fI
 
-  ast-cmd -f 834 -u vg-username -p xxxx -s sipphone add-trunk vg
+  ast-cmd -f 834 -u vg-username -p xxxx -s voipgate add-trunk vg
 .RE
+
+.I junction
+
+.RS
+an IAX connection to Junction Networks. After you register with them
+you can use the command:
+
+  ast-cmd -f \fIprefix\fR -u \fIuser\fR -p \fIpassword\fR -s junction add-trunk \fRname\fI
+
+  ast-cmd -f 835 -u junc-username -p xxxx -s junction add-trunk junc
+.RE
+
 
 .I sip:server_address , iax:server_address
 .RS
