@@ -1,0 +1,757 @@
+#! /bin/sh
+
+# a helper script for asterisk and xorcom rapid.
+# it does all the little things that are too big to fit into the menu
+
+asterisk_bin=/usr/sbin/asterisk
+out_dir=/var/spool/asterisk/outgoing
+sounds_sys_dir=/usr/share/asterisk/sounds
+chan_num=
+
+call_from=
+call_to=
+
+# names on a CDROM better conform to the original ISO9660 8.3 naming 
+# restriction 
+custom_config_file_name=ast-cfg.deb
+custom_config_file=/media/cdrom0/$custom_config_file_name
+
+sip_base_dir=/etc/asterisk/sip-phones.d
+iax_base_dir=/etc/asterisk/iax-phones.d
+vm_base_dir=/etc/asterisk/voicemail-phones.d
+
+EXIM_CFG_FILE=/etc/exim4/update-exim4.conf.conf 
+
+READLINE_READ=
+if [ "$SHELL" = '/bin/bash' ]
+then READLINE_READ='-e'
+fi
+
+# mailbox to use:
+MAIL=${MAIL:-"/var/spool/mail/$LOGNAME"}
+
+usage() {
+  program=`basename $0`
+	echo >&2 "$program: a helper script for sterisk"
+	echo >&2 "Usage:"
+	echo >&2 "  $program cmd \"command\": command asterisk and sanitize output"
+	echo >&2 "  $program [options] call: create a call file"
+	echo >&2 "  $program inst-cfg [DEB_PACKAGE]: install a custom config deb"
+	echo >&2 "  $program -c CHAN_NUM info: what is this zaptel channel?"
+	echo >&2 "  $program -c SIP_PEER -p NEW_PASS sip-pass: set password for a sip peers"
+	echo >&2 "  $program -c IAX_PEER -p NEW_PASS iax-pass: set password for a iax peers"
+	echo >&2 "  $program -c VMBOX -p NEW_PASS vm-pass: set password for a voicemail box"
+	echo >&2 "  $program vm-auto-change VMBOX NEW_PASS: set password for a voicemail box"
+	echo >&2 "  $program mysql-pass NEW_PASS: set root password of mysql server"
+	echo >&2 "  $program readmsg MSG_NUM [MBOX]: print message MSG_NUM from $MAIL"
+	echo >&2 "  $program hostname NEW_HOSTNAME: set the hostname to NEW_HOSTNAME"
+	echo >&2 "  $program -s SMTP_SERVER mail-cfg: basic mail server conf"
+	echo >&2 "  $program wav-player [wav-files]: play wav files to output (for moh)"
+	echo >&2 "  $program local-lines: list local lines"
+	echo >&2 ""
+	echo >&2 "'call' options:"
+	echo >&2 "  -f FROM_CHANNEL"
+	echo >&2 "  -F FROM_EXTEN (-f or -F is required)"
+	echo >&2 "  -t TO_EXTENSTION (required)"
+	echo >&2 ""
+	echo >&2 "'inst-cfg' options:"
+	echo >&2 "  DEB_PACKAGE (default: $custom_config_file)"
+	echo >&2 ""
+	
+}
+
+# replace 'fxs' with 'fxo'
+sig_convert() {
+  case "$1" in
+	fxs)echo fxo;;
+	fxo)echo fxs;;
+	FXS)echo FXO;;
+	FXO)echo FXS;;
+	*) :;;# else? print nothing. 
+	esac
+}
+
+while getopts 'd:c:f:F:p:t:s:u:' opt
+do
+  case "$opt" in
+	  c) chan_num="$OPTARG" ;;
+	  f) call_from="$OPTARG" ;;
+		# I assume all phone are on context 'default':
+		F) call_from="Local/$OPTARG@default" ;;
+		p) pass="$OPTARG" ;;
+	  t) call_to="$OPTARG" ;;
+		s) server="$OPTARG" ;;
+		u) user="$OPTARG" ;;
+	esac
+done
+shift $(($OPTIND -1))
+
+
+call_file() {
+  if [ -z "$call_from" ] || [ "$call_from" = "Local/@default" ] || [ -z "$call_to" ]
+	then
+	  echo >&2 "parameters -f and -t are required."
+		usage
+		exit 3
+	fi
+
+  # hopefully /var/tmp will be on the same filesystem as the asterisk
+	# outgoing spool: /var/spool/asterisk/outgoing
+	call_file_name=`mktemp /var/tmp/ast-cmd-call-XXXXXX`
+	if [ $? -ne 0 ]
+	then
+	  echo >&2 "$0: Failed to create temporary call file. Error $?"
+		exit 5
+	fi
+	cat >$call_file_name <<EOF
+Channel: $call_from
+Extension: $call_to
+EOF
+  # make sure it is readable and erasable by the asterisk user:
+  chown --reference=$out_dir $call_file_name
+  mv $call_file_name $out_dir
+
+#Channel: Local/101@stream
+#MaxRetries: 2
+#RetryTime: 60
+#WaitTime: 30
+#Context: stream
+#Extension: 100
+#Priority: 1
+}
+
+asterisk_rx() {
+	# input is from /dev/null to avoid trashing pdmenu's console in case 
+	# the output is piped to 'display'
+	# TODO: this will ignore an error from asterisk
+	$asterisk_bin </dev/null -rx "$1" \
+	| egrep -v '^(Core debug|Verbosity) is at least [0-9]+'
+}
+
+set_sip_pass() {
+	type="$1" # 'sip' or 'iax'
+	if [ "$type" = 'vm' ]; then 
+		shift
+		set_vm_pass "$@"
+		return $?
+	fi
+	sip_peer="$2"
+	new_pass="$3"
+	
+	
+	# TODO: this is needed for md5secret . If you use anything else, edit
+	# the script
+	sip_realm='asterisk' 
+
+	case "$type" in sip)base_dir=$sip_base_dir;;iax)base_dir=$iax_base_dir;;esac
+	sip_conf_file="${sip_base_dir}/${sip_peer}.conf"
+
+	if [ ! -w "$sip_conf_file" ]
+	then
+		echo >&2 \
+			"$0: Sip peer config file $sip_conf_file does not exist or is not writable. Aborting"
+		exit 6
+	fi
+
+	if grep -q '^secret=' "$sip_conf_file"
+	then
+		# The file has a "secret" field. Edit it
+		sed -i -e "s/^secret=.*/secret=$new_pass/" "$sip_conf_file"
+	else
+		if grep -q '^md5secret=' "$sip_conf_file"
+		then
+			# It has no 'secret', but it has 'md5secret' . Edit it
+			md5secret=`echo $sip_peer:$sip_realm:new_pass | md5sum | cut -d ' ' -f1`
+			sed -i -e "s/^md5secret=.*/md5secret=$md5secret/" "$sip_conf_file"
+		else
+			# nither 'secret' nor 'md5secret' add 'secret'
+			echo "secret=$new_pass" >> "$sip_conf_file"
+		fi
+	fi
+}
+
+set_vm_pass() {
+	vmbox="$1"
+	new_pass="$2"
+	
+	# TODO: this is needed for md5secret . If you use anything else, edit
+	# the script
+	sip_realm='asterisk' 
+
+	vm_conf_file="${vm_base_dir}/${vmbox}.conf"
+
+	if [ ! -w "$vm_conf_file" ]
+	then
+		echo >&2 \
+			"$0: Voicemail config file $vm_conf_file does not exist or is not writable. Aborting"
+		exit 6
+	fi
+
+	sed -i -e "s/\(.*=>[ 	]*\)[0-9a-z-]*\(,.*\)/\1$new_pass\2/" "$vm_conf_file"
+}
+
+# leave only base names of "music" files in the given directory
+sound_dir_files() {
+  ls $1 |egrep -i '.(wav|gsm)$' | rev | cut -d / -f1 | cut -d. -f2- |rev \
+	| tr A-Z a-z \
+	| sort
+}
+
+install_custom_config() {
+  need_umount=false
+  need_eject=false
+	config_not_found=true
+	
+	# If the file is not available it may be on a removable media
+	if [ -d "$custom_config_file" ]
+	then
+		custom_config_file=$custom_config_file/$custom_config_file_name
+	fi
+	if [ -r "$custom_config_file" ] 
+	then
+		config_not_found=false
+	else
+		# is it on a removable media?
+		case "$custom_config_file" in 
+			/media/*) 
+				mnt_point=`echo $custom_config_file| cut -d/ -f1-3`
+				# let's hope that the media is already in place:
+				mount $mnt_point 2>/dev/null
+				if [ -r "$custom_config_file" ] 
+				then
+					# the media was in place. Don't forget to umount it when done.
+					need_umount=true
+					config_not_found=false
+				else
+					# maybe it is a removable media and the user needs to insert media
+					dev=` grep $mnt_point /etc/fstab |  awk '{print $1}' |head -n 1`
+					if [ "" != "$dev" ]
+					then
+						# hopefully eject will work here
+						eject $dev 2>/dev/null
+						if [ $? -eq 0 ]
+						then
+							read $READLINE_READ \
+								-p "Please insert media cdrom and press Enter " garbage
+							mount $mnt_point 2>/dev/null
+							if [ -r "$custom_config_file" ] 
+							then
+								# yes, it is. Don't forget to umount later. also eject later?
+								need_eject=true
+								need_umount=true
+								config_not_found=false
+							fi
+						fi
+					fi
+				fi
+			;;
+		esac
+	fi
+	if $config_not_found
+	then
+		echo >&2 "$0: Unable to find custom configuration package $config. Aborting."
+		return 1
+	fi
+
+	pkg_name=asterisk-config-custom
+	# the custom package will obsolet the old package. But the old 
+	# asterisk-config will remain configured. 
+	# thus if the installation of the custom config package was successful, 
+	# we need to purge the original asterisk-config package.
+	#
+	# This should also override an existing asterisk-config package.
+	if dpkg -l $pkg_name |grep -q '^.[ic]'
+	then
+		# an older custom package is installed. Get rid of its files, 
+		# as a --install will notr remove old config files
+		dpkg --purge --force-depends $pkg_name
+	fi
+	dpkg --install "$custom_config_file" \
+	&& dpkg --purge asterisk-config
+
+	# copy the sound files
+	menu_file=/etc/asterisk/extensions.d/ivr1.conf
+	sound_to_copy=''
+	sound_missing=''
+	tmp_sound_files=`mktemp`
+	
+	if [ -f $menu_file ]
+	then 
+		egrep '^exten.*(Background|Playback)' $menu_file \
+		| cut -d'(' -f2 | cut -d')' -f1 \
+		| grep -v -F invalid \
+		| tr A-Z a-z \
+		| sort -u \
+		>$tmp_sound_files
+	fi
+	sounds_dir=`dirname $custom_config_file`
+	# if we have any wav files, we'll need to convert them. Install
+	# sox if it is not already installed:
+	if ls $sounds_dir | grep -q -i '\.wav$' && \
+		! dpkg -l sox 2>/dev/null |grep -q ^.i 
+	then apt-get -y install sox
+	fi
+	# get all the diffrences , but ignore if only extras in the CD
+	# rev | cut | rev for simpler parsing:
+	if sound_dir_files $sounds_dir | diff -q -i - $tmp_sound_files >/dev/null
+	then # lists are identical. Copy
+	  for snd_file in `cat $tmp_sound_files`
+	  do
+			# this is a single file from the files list in the package
+			# get all the matching files in the directory. There should be only one
+			# in fact it should be an error to have more than one, but I see no 
+			# harm done.
+			# The problem is that we don't know if it is wav or gsm and we can't 
+			# easily use globbing because we don't know the exact case of the name.
+			for file in `ls $sounds_dir/* 2>/dev/null| egrep -i "/$snd_file.(wav|gsm)$"`
+			do
+				if [ -f $file ]; then
+					base_lower=`basename $file |tr A-Z a-z`
+					case "$base_lower" in 
+					*.wav) sox $file -r 8000 -c 1 -s -w $sounds_sys_dir/$base_lower
+					;;
+					*)cp -v $file $sounds_sys_dir/$base_lower
+					;;
+					esac
+				fi
+			done
+	  done
+	else
+		# if there are only extra files, do nothing:
+		if sound_dir_files $sounds_dir | diff -i -y - $tmp_sound_files | grep -q '[>|]'
+		then # '|': diffs. '>': missing in the CD.
+			echo "Files list is not as expected. The difference between the lists:"
+			# anything better than a simple diff ?
+			sound_dir_files $sounds_dir | diff -i \
+				--label "Files on CD" --label "Configured sounds" -u \
+				- $tmp_sound_files 
+			echo ""
+			echo "If a sound file is missing Asterisk will run but simply fail "
+			echo "to play that sound when needed."
+			echo ""
+			echo "If you answer 'y' here I'll simply all the copy files from the"
+			echo "sounds directory. If not, I'll copy nothing. You can later copy"
+			echo "the sound files manually to $sounds_sys_dir ."
+			echo ""
+			read $READLINE_READ \
+				 -p "So what will it be? Please answer y or n and press Enter " answer
+			case "$answer" in y*|Y*) cp $sounds_dir/* $sounds_sys_dir ;;esac
+		fi
+	fi
+	
+	# detect cards. -r: use rapid config files, -d: detect modules
+	# -s: stop and restart asterisk
+	/usr/sbin/genzaptelconf -sr
+	# the custom package can ask the script to do some extra operations
+	# by including some data files in /usr/share/rapid-scripts:
+
+	if $need_umount; then umount $mnt_point; fi
+	if $need_eject; then eject $dev; fi
+	
+	# do we need to configure a mail server?
+	# if the exim configtype is still local, then the mail server will surely
+	# not be able to deliver mail elsewhere (a fully-functioning system is
+	# "standalone")
+	# 
+	# in addition, if the user has no emails in the VM conf, no point
+	# in asking to configure mail here
+	if grep -q "^dc_eximconfig_configtype='local'" $EXIM_CFG_FILE &&
+		grep -v '^[[:space:]]*;' /etc/asterisk/voicemail-phones.d/*.conf \
+		| grep -q '@'
+	then
+		# configure mail server interactively
+		ast-cmd mail-cfg-int
+	fi
+}
+
+#print message number $1 from mbox $MAIL
+readmsg() {
+	CNT=$1
+	
+	# make sure we have a mailbox:
+	if [ ! -r "$MAIL" ]; then
+		echo "Cannot read mailbox '$MAIL'. Aborting" >&2
+		exit 1
+	fi
+
+	awk '
+	/^From /	{ count++; header=1 }
+	!/^From / && count == CNT	{
+			if(match($0,/^$/)) {
+				header=0
+			}
+			if(header && !match($0, /^Date:|^Subject:/))
+				next
+			print
+		}
+	' CNT=$CNT < "$MAIL"
+}
+
+print_codecs() {
+	server_type=$1
+	case "$server_type" in 
+	voipgate)
+		echo "; voipgate prefer ilbc"
+		echo "disallow=all"
+		echo "allow=ilbc"
+		echo ";allow=ulaw"
+		echo ";allow=gsm"
+		;;
+	sipphone)
+		echo "; sipphone seems to use gsm"
+		echo "disallow=all"
+		echo "allow=ilbc"
+		echo "allow=gsm"
+		echo "allow=ulaw"
+		;;
+	fwd)
+		echo "; FWD only supports ulaw and the non-free g729"
+		echo "disallow=all"
+		echo "allow=ulaw"
+		echo ";allow=g729"
+		;;
+	*)
+		echo ";disallow=all"
+		echo ";allow=ulaw"
+		echo ";allow=gsm"
+		echo ";allow=ilbc"
+		;;
+	esac
+}
+
+basic_mail_conf() {
+	new_smtp=$1
+	# The domain from resolv.conf
+	new_domain=`awk '/^(domain|search) /{print $2}' /etc/resolv.conf|head -n 1`
+	new_domain=`echo $new_domain |tr -d -c '.a-zA-Z0-9-'`
+	new_smtp=`echo $new_smtp |tr -d -c '.a-zA-Z0-9-'`
+	#if [ "$new_domain" = "" ]; then
+	#  echo >&2 "Missing new domain for . Aborting"
+	#fi
+	if [ "$new_smtp" = "" ]; then
+	  echo >&2 "Missing new SMTP server for mail settings.. Aborting"
+		usage
+		exit 1
+	fi
+	set -e
+	echo $new_domain>/etc/mailname
+	sed -i -e "s/\(^dc_eximconfig_configtype=\).*/\1'satellite'/" $EXIM_CFG_FILE
+	sed -i -e "s/\(^dc_smarthost=\).*/\1'$new_smtp'/" $EXIM_CFG_FILE
+	sed -i -e "s/\(^dc_readhost=\).*/\1'$new_domain'/" $EXIM_CFG_FILE
+	/usr/sbin/update-exim4.conf
+	/etc/init.d/exim4 restart
+	echo "Mail configured successfully."
+	echo "If you need more options, try: dpkg-reconfigure exim4-config"
+}
+
+dump_exten() {
+	exten="`echo $1| tr A-Z a-z | tr -d -c a-z0-9-`"
+	asterisk_rx "show dialplan $exten" 
+	
+}
+
+case "$1" in
+  cmd)
+	  if [ -z "$2" ]
+		then
+		  echo >&2 "Missing command to asterisk. Aborting"
+			usage
+			exit 1
+		fi
+		asterisk_rx "$2"
+		;;
+  dump-exten)
+	  if [ -z "$2" ]
+		then
+		  echo >&2 "Missing dialplan extension to print. Aborting"
+			usage
+			exit 1
+		fi
+		dump_exten "$2"
+		;;
+	call)
+	  call_file
+		;;
+	inst-cfg)
+	  if [ -n "$2" ]
+		then
+			custom_config_file="$2"
+		fi
+		install_custom_config
+		;;
+	info)
+	  if [ -n "$chan_num" ]
+		then
+			sig_type=`asterisk_rx "zap show channel $chan_num" | awk '/^Signalling Type:/{print $3}'`
+			chan_type=`sig_convert $sig_type`
+			echo "Channel $chan_num ($chan_type)"
+		fi
+		;;
+	readmsg)
+		num=`echo $2 | tr -d -c 0-9`
+	
+		# emulate 'from'
+		if [ "$3" != '' ]
+		then
+			case "$3" in */*) MAIL=$3;; *) MAIL=/var/mail/$3;; esac
+		fi
+		
+		if [ -z "$num" ]
+		then
+		  echo >&2 "Missing message number '$1'. Aborting"
+			usage
+			exit 1
+		fi
+		readmsg $num;
+		;;
+	vm-pass|sip-pass|iax-pass)
+		if [ -z "$chan_num" ]
+		then
+		  echo >&2 "Missing sip peer for command '$1'. Use -c peer_name. Aborting"
+			usage
+			exit 1
+		fi
+		if [ -z "$pass" ]
+		then
+		  echo >&2 "Missing password for command '$1'. Aborting"
+			usage
+			exit 1
+		fi
+		type=`echo $1 | cut -d- -f1` # 'sip', 'iax' or 'vm'
+		set_sip_pass "$type" "$chan_num" "$pass"
+		;;
+	vm-auto-pass)
+		set_vm_pass "$2" "$3"
+		exit $?
+		;;
+#	vm-pass)
+#		if [ -z "$chan_num" ]
+#		then
+#		  echo >&2 "Missing voicemail box for command 'vm-pass'. Use -c vmbox. Aborting"
+#			usage
+#			exit 1
+#		fi
+#		if [ -z "$2" ]
+#		then
+#		  echo >&2 "Missing password for command 'vm-pass'. Aborting"
+#			usage
+#			exit 1
+#		fi
+#		set_vm_pass "$chan_num" "$pass"
+#		;;
+	mysql-pass)
+		if [ -z "$pass" ]
+		then
+		  echo >&2 "Missing password for command $1. Aborting"
+			usage
+		fi
+		#new_pass="$2"
+		# TODO: if you ever need to put something useful in root's my.cnf
+		# this script needs rewritng...
+		mysqladmin password "$pass" && { \
+			touch /root/.my.cnf; chmod 600 /root/.my.cnf; \
+			echo -e >/root/.my.cnf \
+				"[mysql]\nuser = root\npassword = $pass\n\n" \
+				"[mysqladmin]\nuser = root\npassword = $pass" ; \
+		}
+		  
+		;;
+	hostname)
+		newname=`echo $2 |tr A-Z a-z | tr -d -c a-z0-9-`
+		oldname=`hostname`
+		if [ -z "$2" ]
+		then
+		  echo >&2 "Missing hostname for command $1. Aborting"
+			usage
+			exit 1
+		fi
+		set -e 
+		echo $newname >/etc/hostname
+		#echo $newname >/etc/mailname
+		sed -i -e "s/^\(127\.0\.0\.1.*\)$oldname/\1$newname/" /etc/hosts
+		hostname $newname
+		;;
+	mail-cfg-int)
+		 # get parameters for mail-cfg interactively
+    #cfg_file=/etc/exim4/update-exim4.conf.conf 
+    #cur_domain=`cat /etc/mailname`
+    #cur_smtp=`awk -F\' '/^dc_smarthost=/{print $2}' $cfg_file`
+		echo "Please enter the name or IP address of your outgoing mail (SMTP) server"
+		read $READLINE_READ -p "SMTP Server: " try_smtp
+		#try_smtp=`whiptail --inputbox --title "Outgoing Mail Server" "Enter SMTP server name/IP" 10 60 "$cur_smtp"`
+		#if [ $? != 0 ]; then exit $?; fi
+		basic_mail_conf "$try_smtp" mail-cfg
+		exit $?
+		;;
+	mail-cfg)
+    #cur_domain=`cat /etc/mailname`
+    #cur_smtp=`awk -F\' '/^dc_smarthost=/{print $2}' $EXIM_CFG_FILE`
+		new_domain=`echo $domain |tr -d -c '.a-zA-Z0-9-'`
+		new_smtp=`echo $server |tr -d -c '.a-zA-Z0-9-'`
+		basic_mail_conf $new_domain $new_smtp
+		;;
+	wav-player)
+		if [ "$2" = '' ]
+		then
+			echo >&2 "$0: no sound file to play for command $1. Aborting"
+			exit 1
+		fi
+		shift 2
+		exec /usr/bin/sox -t wav "$@" -t raw -
+		;;
+	add-trunk)
+		# ast-cmd  -f 7 -u USERNAME -p PASS -s voipgate add-trunk voipgate
+		# ast-cmd  -f 8 -u FWDNUM -p PASS -s fwd add-trunk fwd
+		# ast-cmd  -f 8 -u NUM -p PASS -s sipphone add-trunk sipphone
+		server=`echo $server | tr -d -c A-Za-z0-9:._-`
+		CFG_DIR=/etc/asterisk
+		case "$server" in
+		voipgate) # VoIPGate-IAX
+			server_type=$server
+			server=register.voipgate.com
+			type=iax
+			;;
+		fwd) # FWD-IAX
+			server_type=$server
+			server=iax.fwdnet.net
+			type=iax
+			;;
+		sipphone) # FWD-IAX
+			server_type=$server
+			server=proxy01.sipphone.com
+			type=sip
+			;;
+		sip:*)
+			type=sip
+			server_type=custom-sip
+			server=`echo $server | cut -d: -f2-`
+			;;
+		iax:*)
+			type=iax
+			server_type=custom-iax
+			server=`echo $server | cut -d: -f2-`
+			;;
+		*) 
+			echo >&2 "Server name should be on of:"
+			echo >&2 "  fwd"
+			echo >&2 "  sipphone"
+			echo >&2 "  voipgate"
+			echo >&2 "  sip:hostname_or_ip"
+			echo >&2 "  iax:hostname_or_ip"
+			;;
+		esac
+		if [ "$server" = '' ]; then
+			echo >&2 "missing server name (-s)"; usage; exit 1
+		fi
+		
+		# Only IAX is currently supported
+		#type=`echo $2 |tr A-Z a-z | tr -d -c a-z`
+		#case "$type" in sip|iax) :;; 
+		#	*) echo >&2 "Invalid channel type $type."; usage; exit 1;;
+		#esac
+		name=`echo $2 |tr A-Z a-z | tr -d -c a-z`
+		if [ "$name" = '' ]; then
+			echo >&2 "missing trunk name"; usage; exit 1
+		fi
+		call_from=`echo $call_from | tr A-Z a-z | tr -d -c A-Za-z0-9`
+		if [ "$call_from" = '' ]; then
+			echo >&2 "missing server extension number (-f)"; usage; exit 1
+		fi
+		call_to=`echo $call_to | tr A-Z a-z | tr -d -c A-Za-z0-9`
+		call_to_text=''
+		if [ "$call_to" != '' ] && [ " $type" = 'sip' ]; then
+			call_to_text="$call_to"
+		fi
+		user=`echo $user | tr -d -c A-Za-z0-9_-`
+		if [ "$user" = '' ]; then
+			echo >&2 "missing username (-u)"; usage; exit 1
+		fi
+		pass=`echo $pass | tr -d -c A-Za-z0-9_-`
+		if [ "$pass" = '' ]; then
+			echo >&2 "missing password (-p)"; usage; exit 1
+		fi
+		#echo "register => $call_from:$pass:$user@$server/$call_to" \
+		#	>"$CFG_DIR/$type-reg.d/trunk-$name.conf"
+		echo "register => $user:$pass@$server$call_to_text" \
+			>"$CFG_DIR/$type-reg.d/trunk-$name.conf"
+			
+		(
+			echo "[trunk-$name]"
+			echo "type=peer"
+			echo "host=$server"
+			echo "username=$user"
+			echo "secret=$pass"
+			print_codecs $server_type
+			echo "context=from-$name"
+			echo ";qualify=300"
+			echo ";externip=1.2.3.4"
+			if [ "$type" = 'sip' ]; then
+				echo "canreinvite=no"
+			fi
+		) >$CFG_DIR/$type-phones.d/trunk-$name.conf
+		in_name=$user
+		if [ "$server_type" = 'fwd' ]; then in_name=iaxfwd; fi
+		# for FWD: in_name=iaxfwd , and auth=rsa
+		(
+			echo "[$in_name]"
+			echo ";This allows $name to place incoming calls to you"
+			echo "type=friend"
+			echo "host=$server"
+			echo "username=$in_name"
+			if [ "$server_type" = 'fwd' ]; then
+				echo "auth=rsa"
+			else
+				echo "secret=$pass"
+			fi
+			echo "fromdomain=$server"
+			echo ";insecure=very"
+			print_codecs $server_type
+		) >$CFG_DIR/$type-phones.d/$in_name.conf
+		chan_type=`echo $type| tr a-z A-Z`
+		prefix_len=`echo -n $call_from | wc -c`
+		case "$type" in sip)chan_type=SIP;;iax)chan_type=IAX2;;esac
+		(
+			# TODO: set CID and name before calling
+			echo "[trunk-$name]"
+			echo ";exten => _$call_from.,1,SetCallerId(\"Your Name\" <$user>)"
+			echo "exten => _$call_from.,1,SetCIDNum($user)"
+			echo "exten => _$call_from.,2,Macro(trunksip,$chan_type/trunk-$name,\${EXTEN:$prefix_len})"
+		) > $CFG_DIR/extensions.d/trunk-$name.conf
+		#echo "exten => _$call_from.,1,Macro(dialout,$chan_type/trunk-$name,\${EXTEN:1})" \
+		#	>$CFG_DIR/extensions-phones.d/$call_from.conf
+		(
+			# TODO: set CID and name before calling
+			echo "[from-$name]"
+			echo "; Here come incoming calls from trunk $name"
+			echo "; Set the default phone to answer them:"
+			echo "include => phone"
+			echo ""
+			if [ "$server_type" = 'fwd' ]; then
+				echo "exten => $user,1,Goto(s,1)"
+				echo ""
+			fi
+			echo "; You may want to permit them doing other things:"
+			echo ";include => phones"
+			echo ";include => features"
+			echo ";include => operator"
+			echo ";include => tests"
+		) > $CFG_DIR/extensions.d/from-$name.conf
+		;;
+	local-lines)
+	  asterisk_rx 'zap show channels' | sed -e '1d' | grep -v pseudo \
+		| awk '{print $1}' \
+		| while read chan
+		  do
+				sig_type=`asterisk_rx "zap show channel $chan" | awk '/^Signalling Type:/{print $3}'`
+				if [ "$sig_type" = 'FXO' ]; then echo "Zap/$chan"; fi
+			done
+		asterisk_rx 'sip show peers'| sed -e 1,2d | tac \
+		| awk -F/ '/^[0-9a-zA-Z]*\// {printf "SIP/%s\n",$1}'
+		asterisk_rx 'iax2 show peers' | sed -e 1d | tac \
+		| grep -v '(Unspecified)' |awk '{printf "IAX2/%s\n",$1}'
+		;;
+	*)
+		  echo >&2 "Missing or incorrect command ($1). Aborting"
+			usage
+			exit 10
+esac

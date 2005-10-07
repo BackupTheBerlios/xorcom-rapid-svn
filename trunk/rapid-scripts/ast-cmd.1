@@ -1,0 +1,235 @@
+.TH AST_CMD 1 "February 2nd, 2005" "Xorcom Rapid Asterisk" "Linux Programmer's Manual"
+.SH NAME
+ast-cmd \- Xorcom Rapid Commands Helper
+.SH SYNOPSIS
+.B ast-cmd cmd
+.I "command"
+: command Asterisk and sanitize output.
+
+.B ast-cmd 
+.I [options]
+.B call
+: Create a call file
+
+.B ast-cmd inst-cfg
+.I [DEB PACKAGE]
+: install a custom rapid config deb
+
+.B ast-cmd 
+.I -c CHAN_NUM 
+.B info
+: what is this zaptel channel?
+
+.B ast-cmd 
+.I -c SIP_PEER 
+.I -p NEW_PASS
+.B sip-pass 
+: set password for a sip peers
+
+.B ast-cmd 
+.I -c IAX_PEER 
+.I -p NEW_PASS
+.B iax-pass 
+: set password for a iax peers
+
+.B ast-cmd 
+.I -c VMBOX 
+.I -p NEW_PASS
+.B vm-pass 
+: set password for a voicemail box
+
+.B ast-cmd vm-auto-pass
+.I VMBOX NEW_PASS
+: set password for a voicemail box (equivalent)
+
+.B ast-cmd 
+.B mysql-pass 
+.I NEW_PASS
+: set the root password for the mysql server
+
+.B ast-cmd readmsg 
+.I MSG_NUM [MBOX]
+: print message 
+.I MSG_NUM 
+from mail spool
+
+.B ast-cmd hostname
+.I NEW_HOSTNAME
+: changes the hostname to the parameter
+.I NEW_HOSTNAME
+
+.B ast-cmd 
+.I -s SMTP_SERVER
+.B mail-cfg
+: Basic mail server setup
+
+.B ast-cmd 
+.B mail-cfg-int
+: Ask user for the required mail setup input
+
+.B ast-cmd 
+.I -s service
+.I -u username
+.I -p password
+.I -f prefix
+.B add-trunk
+: Add a VoIP trunk for supported services
+
+.B ast-cmd local-lines
+: lists the local lines/channels that seem to be connected to the PBX
+
+.B call 
+options:
+
+  -f FROM_CHANNEL
+  -F FROM_EXTEN (-f or -F is required)
+  -t TO_EXTENSTION (required)
+
+.B inst-cfg 
+options:
+
+  DEB_PACKAGE (default: /media/cdrom0/ast-cfg.deb)
+
+.SH DESCRIPTION
+.BR ast-cmd 
+is a small script for all the extra functionalities we needed.
+Thus it has a number of independent
+.I commands.
+I expect that the commands 
+.I call, sip-pass, iax-pass 
+and
+.I vm-pass
+will be useful to others as well.
+
+.B hostname
+assumes that the hostname in /etc/hosts is in the entry of 127.0.0.1 .
+This is how it was in my test system.
+
+.B mysql-pass
+Assumes that the password is either empty (installation default) or is
+already written in the file /root/.my.cnf , which allows it access to the
+mysql server. After a successful password change it will write the password 
+to that file as well to allow the root system user password-less access to 
+the root mysql user. Note that the command rewirtes /root/.my.cnf
+
+.B mail-cfg
+Sets up simple exim4(8) configuration using update-exim4.conf(8) (whose 
+config file is /etc/exim/update-exim4.conf.conf). Sets up a "sattelite"-type
+host that will relay all mail to the SMTP server from the command-line, and
+sets the domain to the one from /etc/resolv.conf.
+
+If you need a more custom mail server setup, use:
+.RS
+dpkg-reconfigure exim4-config
+.RE
+(tip: to exit from that wizard of the above command without a change, 
+answer "yes" to the first question, and then press Esc twice).
+
+
+.SH add-trunk
+allows setting a SIP or IAX trunk. The \fBname\fR parameter is used to 
+set the context into which the trunk will ring, as well as for all the 
+files generated. For an \fIIAX\fB trunk, The script generates the following 
+files:
+
+.I /etc/asterisk/iax-reg.d/\fBname\fI.conf
+
+.RS
+for registrating to the provider
+.RE
+
+.I /etc/asterisk/iax-phones.d/trunk-\fBname\fI.conf
+
+.RS
+The \fIIAX\fR peer needed to connect to the provider.
+.RE
+
+.I /etc/asterisk/iax-phones.d/\fBuser\fI.conf
+
+.RS
+The \fIIAX\fR user needed to authenticate calls from the provider.
+with a FWD connection, \fIfwdiax\fR is always used as the user here.
+.RE
+
+.I /etc/asterisk/extensions.d/trunk-\fBname\fI.conf
+
+.RS
+A dialpan snippen: the context \fItrunk-name\fR that contains the 
+required extensions to dial \fIto\fR the trunk using the prefix 
+\fIprefix\fR. Consider \fIinclude\fR-ing that context in other 
+contexts (e.g: \fIdefault\fR) to allow calls to the trunk.
+.RE
+
+.I /etc/asterisk/extensions.d/from-\fBname\fI.conf
+
+.RS
+A dialpan snippet: the context \fIfrom-name\fR into which calls
+\fIfrom\fI the trunk land. You should probably edit this file to 
+fine-tune the "permissions" by including the relevant 
+that contains the required extensions to dial \fIto\fR the trunk 
+using the prefix \fIprefix\fR.
+.RE
+
+.B Known trunks
+
+.I fwd
+
+.RS
+an IAX connection to Free World Dialup. You should register to FWD
+and then use the web interface to set account type to 'IAX'. Use the 
+following page:
+
+http://account.freeworlddialup.com/index_new.php?section_id=112
+
+Then use the command:
+
+  ast-cmd -f \fIprefix\fR -u \fInum\fR -p \fIpassword\fR -s fwd add-trunk \fRname\fI
+
+  ast-cmd -f 8 -u 611334 -p xxxx -s fwd add-trunk fwd-tr
+.RE
+
+.I sipphone
+
+.RS
+a SIP connection to SipPhone.com. After you register with to SipPhone
+you can use the command:
+
+  ast-cmd -f 8 -u \fInum\fR -p \fIpassword\fR -s sipphone add-trunk \fRname\fI
+
+  ast-cmd -f 11 -u 17476065631 -p xxxx -s sipphone add-trunk sipphone-com
+.RE
+
+.I voipgate
+
+.RS
+an IAX connection to VoipGate. After you register with them
+you can use the command:
+
+  ast-cmd -f \fIprefix\fR -u \fIuser\fR -p \fIpassword\fR -s voipgate add-trunk \fRname\fI
+
+  ast-cmd -f 834 -u vg-username -p xxxx -s sipphone add-trunk vg
+.RE
+
+.I sip:server_address , iax:server_address
+.RS
+Try to connect to an arbitrary SIP/IAX trunk. Should hopefully work.
+.RE
+
+So once you've run the command \fIadd-trunk\fR with the correct parameters, 
+you should edit the relevant files under /etc/asterisk/extensions.d/ (probably 
+default.conf and from-\fIname\fR.conf) and then issue a reload command.
+
+If the host name, user name and password are correct, asterisk will probably 
+register immedietly as shown in the output of the CLI command 'iax2 show 
+registry' or 'sip show registry' .
+
+.SH AUTHOR
+This manual page was written by Tzafrir Cohen <tzafrir.cohen@xorcom.com>
+for the Xorcom Rapid Asterisk distribution.
+.SH BUGS
+Our system has no bugs. However if you notice some undocumented features
+that in your opinions should be best removed, don't hesitate to contact 
+Tzafrir Cohen <tzafrir.cohen@xorcom.com>
+
+.SH SEE ALSO
+.B rapid-menu(1)
