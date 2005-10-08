@@ -417,6 +417,12 @@ print_codecs() {
 		echo "allow=ulaw"
 		echo ";allow=g729"
 		;;
+	goiax.com)
+		echo "; voipgate prefer supports gsm and ulaw"
+		echo "disallow=all"
+		echo "allow=gsm"
+		echo ";allow=ulaw"
+		;;
 	*)
 		echo ";disallow=all"
 		echo ";allow=ulaw"
@@ -632,7 +638,7 @@ case "$1" in
 			server=iax.fwdnet.net
 			type=iax
 			;;
-		sipphone) # FWD-IAX
+		sipphone) # sipphone.com
 			server_type=$server
 			server=proxy01.sipphone.com
 			type=sip
@@ -649,6 +655,11 @@ case "$1" in
 				echo >&2 "cd /var/lib/asterisk/keys; wget wget http://www.jnctn.net/jnctn.pub"
 			fi
       ;;
+		goiax) # goiax.com
+			server_type=$server
+			server=server1.goiax.com
+			type=iax
+			;;
 		sip:*)
 			type=sip
 			server_type=custom-sip
@@ -665,6 +676,7 @@ case "$1" in
 			echo >&2 "  sipphone             (SipPhone)"
 			echo >&2 "  voipgate             (VoipGate)"
 			echo >&2 "  junction             (Junction Networks/IAX)"
+			echo >&2 "  goiax                (GoIAX.com)"
 			echo >&2 "  sip:hostname_or_ip"
 			echo >&2 "  iax:hostname_or_ip"
 			;;
@@ -673,11 +685,6 @@ case "$1" in
 			echo >&2 "missing server name (-s)"; usage; exit 1
 		fi
 		
-		# Only IAX is currently supported
-		#type=`echo $2 |tr A-Z a-z | tr -d -c a-z`
-		#case "$type" in sip|iax) :;; 
-		#	*) echo >&2 "Invalid channel type $type."; usage; exit 1;;
-		#esac
 		name=`echo $2 |tr A-Z a-z | tr -d -c a-z`
 		if [ "$name" = '' ]; then
 			echo >&2 "missing trunk name"; usage; exit 1
@@ -699,8 +706,6 @@ case "$1" in
 		if [ "$pass" = '' ]; then
 			echo >&2 "missing password (-p)"; usage; exit 1
 		fi
-		#echo "register => $call_from:$pass:$user@$server/$call_to" \
-		#	>"$CFG_DIR/$type-reg.d/trunk-$name.conf"
 		echo "register => $user:$pass@$server$call_to_text" \
 			>"$CFG_DIR/$type-reg.d/trunk-$name.conf"
 		secure_modes "$CFG_DIR/$type-reg.d/trunk-$name.conf"

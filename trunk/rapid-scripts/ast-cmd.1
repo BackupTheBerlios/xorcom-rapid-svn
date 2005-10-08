@@ -1,4 +1,4 @@
-.TH AST_CMD 1 "February 2nd, 2005" "Xorcom Rapid Asterisk" "Linux Programmer's Manual"
+.TH AST_CMD 1 "October 8th, 2005" "Xorcom Rapid Asterisk" "Linux Programmer's Manual"
 .SH NAME
 ast-cmd \- Xorcom Rapid Commands Helper
 .SH SYNOPSIS
@@ -196,6 +196,14 @@ Then use the command:
   ast-cmd -f \fIprefix\fR -u \fInum\fR -p \fIpassword\fR -s fwd add-trunk \fRname\fI
 
   ast-cmd -f 8 -u 611334 -p xxxx -s fwd add-trunk fwd-tr
+
+FWD only supports ulaw (g711u), unless you buy some g729 licenses. This 
+means it requires more bandwidth than other services. OTOH, it is free
+and quite popular. A simple way to test your setup.
+
+Try calling 612 for a clock or 613 for an echo test. 
+http://account.freeworlddialup.com/index_new.php?section_id=76 from the 
+web interface can be used to send a call to you.
 .RE
 
 .I sipphone
@@ -231,6 +239,22 @@ you can use the command:
   ast-cmd -f 835 -u junc-username -p xxxx -s junction add-trunk junc
 .RE
 
+.I goiax
+
+.RS
+an IAX connection to GoIAX.com. This is currently an experimental setup.
+After you register with them
+you can use the command:
+
+  ast-cmd -f \fIprefix\fR -u \fIuser\fR -p \fIpassword\fR -s goiax add-trunk \fRname\fI
+
+  ast-cmd -f 43 -u 878201000001 -p top_secret -s goiax add-trunk goiax
+
+  This is (still?) a free service that also provides free calls to the US.
+  Unlike FWD it also supports gsm, if you have less bandwidth to spare.
+
+  To test your setup you can call the conference room at *2663 (*conf).
+.RE
 
 .I sip:server_address , iax:server_address
 .RS
