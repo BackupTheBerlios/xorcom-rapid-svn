@@ -68,6 +68,15 @@ from mail spool
 : Ask user for the required mail setup input
 
 .B ast-cmd 
+\fB-u<sip|iax>:\fIUSERNAME\fR [\fB-p\fR \fIPASSWORD\fR]
+\fB-c\fR \fINUM\fR [\fB-e\fR \fIEMAIL\fR] [\fB-n\fR \fINAME\fR]
+: Add an SIP/IAX line with dialplan extension and voicemail
+
+.B ast-cmd 
+\fB-u<sip|iax>:\fIUSERNAME\fR [\fB-p\fR \fIPASSWORD\fR]
+: Add a simple SIP/IAX line (without dialplan extension)
+
+.B ast-cmd 
 .I -s service
 .I -u username
 .I -p password
@@ -136,10 +145,26 @@ dpkg-reconfigure exim4-config
 answer "yes" to the first question, and then press Esc twice).
 
 
+.SH add-line
+
+has two modes of operation: Mode 1: extension number is given:
+  
+  ast-cmd -u iax:tzafrir -p xxxx -c 607 -n "Tzafrir Cohen" -e tzafrir.cohen@xorcom.com
+
+In this case it will also generate an extension in the context phones
+and a voicemail box with the same number.
+
+Mode 2: no extension number is given:
+
+  ast-cmd -u iax:tzafrir -p xxxx 
+
+Only generate a SIP/IAX line
+
+
 .SH add-trunk
 allows setting a SIP or IAX trunk. The \fBname\fR parameter is used to 
 set the context into which the trunk will ring, as well as for all the 
-files generated. For an \fIIAX\fB trunk, The script generates the following 
+files generated. For an \fIIAX\fR trunk, The script generates the following 
 files:
 
 .I /etc/asterisk/iax-reg.d/\fBname\fI.conf
@@ -174,7 +199,7 @@ contexts (e.g: \fIdefault\fR) to allow calls to the trunk.
 
 .RS
 A dialpan snippet: the context \fIfrom-name\fR into which calls
-\fIfrom\fI the trunk land. You should probably edit this file to 
+\fIfrom\fR the trunk land. You should probably edit this file to 
 fine-tune the "permissions" by including the relevant 
 that contains the required extensions to dial \fIto\fR the trunk 
 using the prefix \fIprefix\fR.
@@ -182,7 +207,7 @@ using the prefix \fIprefix\fR.
 
 .B Known trunks
 
-.I fwd
+.B fwd
 
 .RS
 an IAX connection to Free World Dialup. You should register to FWD
@@ -193,7 +218,7 @@ http://account.freeworlddialup.com/index_new.php?section_id=112
 
 Then use the command:
 
-  ast-cmd -f \fIprefix\fR -u \fInum\fR -p \fIpassword\fR -s fwd add-trunk \fRname\fI
+  ast-cmd -f \fIprefix\fR -u \fInum\fR -p \fIpassword\fR -s fwd add-trunk \fIname\fR
 
   ast-cmd -f 8 -u 611334 -p xxxx -s fwd add-trunk fwd-tr
 
@@ -206,7 +231,7 @@ http://account.freeworlddialup.com/index_new.php?section_id=76 from the
 web interface can be used to send a call to you.
 .RE
 
-.I sipphone
+.B sipphone
 
 .RS
 a SIP connection to SipPhone.com. After you register with to SipPhone
@@ -217,7 +242,7 @@ you can use the command:
   ast-cmd -f 11 -u 17476065631 -p xxxx -s sipphone add-trunk sipphone-com
 .RE
 
-.I voipgate
+.B voipgate
 
 .RS
 an IAX connection to VoipGate. After you register with them
@@ -228,7 +253,7 @@ you can use the command:
   ast-cmd -f 834 -u vg-username -p xxxx -s voipgate add-trunk vg
 .RE
 
-.I junction
+.B junction
 
 .RS
 an IAX connection to Junction Networks. After you register with them
@@ -239,14 +264,14 @@ you can use the command:
   ast-cmd -f 835 -u junc-username -p xxxx -s junction add-trunk junc
 .RE
 
-.I goiax
+.B goiax
 
 .RS
 an IAX connection to GoIAX.com. This is currently an experimental setup.
 After you register with them
 you can use the command:
 
-  ast-cmd -f \fIprefix\fR -u \fIuser\fR -p \fIpassword\fR -s goiax add-trunk \fRname\fI
+  ast-cmd -f \fIprefix\fR -u \fIuser\fR -p \fIpassword\fR -s goiax add-trunk \fIname\fR
 
   ast-cmd -f 43 -u 878201000001 -p top_secret -s goiax add-trunk goiax
 
@@ -256,12 +281,12 @@ you can use the command:
   To test your setup you can call the conference room at *2663 (*conf).
 .RE
 
-.I sip:server_address , iax:server_address
+.B sip:\fIserver_address\fB , iax:\fIserver_address
 .RS
 Try to connect to an arbitrary SIP/IAX trunk. Should hopefully work.
 .RE
 
-So once you've run the command \fIadd-trunk\fR with the correct parameters, 
+So once you've run the command \fBadd-trunk\fR with the correct parameters, 
 you should edit the relevant files under /etc/asterisk/extensions.d/ (probably 
 default.conf and from-\fIname\fR.conf) and then issue a reload command.
 

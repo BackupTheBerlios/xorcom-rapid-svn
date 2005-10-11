@@ -6,6 +6,7 @@
 asterisk_bin=/usr/sbin/asterisk
 out_dir=/var/spool/asterisk/outgoing
 sounds_sys_dir=/usr/share/asterisk/sounds
+CFG_DIR=/etc/asterisk
 chan_num=
 
 call_from=
@@ -48,6 +49,8 @@ usage() {
 	echo >&2 "  $program -s SMTP_SERVER mail-cfg: basic mail server conf"
 	echo >&2 "  $program wav-player [wav-files]: play wav files to output (for moh)"
 	echo >&2 "  $program local-lines: list local lines"
+  echo >&2 "  $program [-c NUM [-e EMAIL] [-n NAME]] -u <sip|iax>:USER -p PASSWORD add-line"
+  echo >&2 "  $program -f PREFIX -u USER -p PASSWORD -s SERVICE add-trunk NAME"
 	echo >&2 ""
 	echo >&2 "'call' options:"
 	echo >&2 "  -f FROM_CHANNEL"
@@ -71,10 +74,11 @@ sig_convert() {
 	esac
 }
 
-while getopts 'd:c:f:F:p:t:s:u:' opt
+while getopts 'c:e:f:F:n:p:t:s:u:' opt
 do
   case "$opt" in
 	  c) chan_num="$OPTARG" ;;
+    e) email="$OPTARG" ;;
 	  f) call_from="$OPTARG" ;;
 		# I assume all phone are on context 'default':
 		F)
@@ -84,6 +88,7 @@ do
       else call_from="Local/$tmp@default"
       fi
       ;;
+    n) full_name="$OPTARG";;
 		p) pass="$OPTARG" ;;
 	  t) call_to="$OPTARG" ;;
 		s) server="$OPTARG" ;;
@@ -423,6 +428,12 @@ print_codecs() {
 		echo "allow=gsm"
 		echo ";allow=ulaw"
 		;;
+	add-exten)
+		echo "; A reasonable default for a local phone:"
+		echo "disallow=all"
+		echo "allow=ulaw"
+		echo ";allow=gsm"
+		;;
 	*)
 		echo ";disallow=all"
 		echo ";allow=ulaw"
@@ -546,21 +557,6 @@ case "$1" in
 		set_vm_pass "$2" "$3"
 		exit $?
 		;;
-#	vm-pass)
-#		if [ -z "$chan_num" ]
-#		then
-#		  echo >&2 "Missing voicemail box for command 'vm-pass'. Use -c vmbox. Aborting"
-#			usage
-#			exit 1
-#		fi
-#		if [ -z "$2" ]
-#		then
-#		  echo >&2 "Missing password for command 'vm-pass'. Aborting"
-#			usage
-#			exit 1
-#		fi
-#		set_vm_pass "$chan_num" "$pass"
-#		;;
 	mysql-pass)
 		if [ -z "$pass" ]
 		then
@@ -621,12 +617,75 @@ case "$1" in
 		shift 2
 		exec /usr/bin/sox -t wav "$@" -t raw -
 		;;
+####################################################################
+  add-line)
+    # has two modes of operation: Mode 1: extension number is given:
+    #   
+    #   ast-cmd -u iax:tzafrir -p xxxx -c 607
+    #
+    # In this case it will also generate an extension in the context phones
+    # and a voicemail box with the same number.
+    #
+    # Mode 2: no extension number is given:
+    #
+    #   ast-cmd -u iax:tzafrir -p xxxx 
+    #
+    # Only generate a SIP/IAX line
+    #
+    case "$user" in 
+      sip:*)
+        type=sip
+        user=`echo $user | cut -d: -f2-`
+        ;;
+      iax:*)
+        type=iax
+        user=`echo $user | cut -d: -f2-`
+        ;;
+      *) 
+        echo >&2 "Incorrect user type: -u sip:something or -u iax:somethng"
+     esac 
+		(
+			echo "[$user]"
+			echo "type=friend"
+			echo "host=dynamic"
+			echo "secret=$pass"
+			print_codecs add-exten
+			echo ";qualify=300"
+			echo ";externip=1.2.3.4"
+      # TODO: only set if those params are set?
+      echo "callerid= $full_name <$chan_num>"
+      if [ "$chan_num" != '' ]; then
+        echo "mailbox=$chan_num"
+      fi
+			if [ "$type" = 'sip' ]; then
+				echo ";canreinvite=no ; force SIP calles to pass through Asterisk"
+        echo ";nat=yes        ; peer is behind NAT"
+			fi
+			echo ";context=custom-context"
+			echo ";insecure=very"
+			print_codecs $server_type
+		) >$CFG_DIR/$type-phones.d/$user.conf
+    secure_modes $CFG_DIR/$type-phones.d/$user.conf
+    if [ "$chan_num" != '' ]
+    then
+		  case "$type" in sip)chan_type=SIP;;iax)chan_type=IAX2;;esac
+      echo "exten => $chan_num,1,Goto($user,1)" \
+      > $CFG_DIR/extensions-phones.d/$chan_num.conf 
+      echo "exten => $user,1,Macro(stdexten,$chan_type/$user,,$chan_num)" \
+      > $CFG_DIR/extensions-phones.d/$user.conf 
+      echo "$chan_num => $chan_num,$full_name,$email" \
+      > $CFG_DIR/voicemail-phones.d/$chan_num.conf
+      secure_modes $CFG_DIR/voicemail-phones.d/$chan_num.conf
+    fi
+    
+    ;;
+
+##################################################################
 	add-trunk)
 		# ast-cmd  -f 7 -u USERNAME -p PASS -s voipgate add-trunk voipgate
 		# ast-cmd  -f 8 -u FWDNUM -p PASS -s fwd add-trunk fwd
 		# ast-cmd  -f 8 -u NUM -p PASS -s sipphone add-trunk sipphone
 		server=`echo $server | tr -d -c A-Za-z0-9:._-`
-		CFG_DIR=/etc/asterisk
 		case "$server" in
 		voipgate) # VoIPGate-IAX
 			server_type=$server
@@ -671,7 +730,7 @@ case "$1" in
 			server=`echo $server | cut -d: -f2-`
 			;;
 		*) 
-			echo >&2 "Server name should be on of:"
+			echo >&2 "Server name (-s) should be on of:"
 			echo >&2 "  fwd                  (Free World Dialup/IAX)"
 			echo >&2 "  sipphone             (SipPhone)"
 			echo >&2 "  voipgate             (VoipGate)"
@@ -679,6 +738,8 @@ case "$1" in
 			echo >&2 "  goiax                (GoIAX.com)"
 			echo >&2 "  sip:hostname_or_ip"
 			echo >&2 "  iax:hostname_or_ip"
+      echo >&2 ""
+      usage
 			;;
 		esac
 		if [ "$server" = '' ]; then
@@ -703,26 +764,12 @@ case "$1" in
 			echo >&2 "missing username (-u)"; usage; exit 1
 		fi
 		pass=`echo $pass | tr -d -c A-Za-z0-9_-`
-		if [ "$pass" = '' ]; then
-			echo >&2 "missing password (-p)"; usage; exit 1
-		fi
+		#if [ "$pass" = '' ]; then
+		#	echo >&2 "missing password (-p)"; usage; exit 1
+		#fi
 		echo "register => $user:$pass@$server$call_to_text" \
 			>"$CFG_DIR/$type-reg.d/trunk-$name.conf"
 		secure_modes "$CFG_DIR/$type-reg.d/trunk-$name.conf"
-		(
-			echo "[trunk-$name]"
-			echo "type=peer"
-			echo "host=$server"
-			echo "username=$user"
-			echo "secret=$pass"
-			print_codecs $server_type
-			echo "context=from-$name"
-			echo ";qualify=300"
-			echo ";externip=1.2.3.4"
-			if [ "$type" = 'sip' ]; then
-				echo "canreinvite=no"
-			fi
-		) >$CFG_DIR/$type-phones.d/trunk-$name.conf
 		in_name=$user
 		if [ "$server_type" = 'fwd' ];      then rsa_name=iaxfwd; fi
 		if [ "$server_type" = 'junction' ]; then rsa_name=jnctn; fi
@@ -806,3 +853,5 @@ case "$1" in
 			usage
 			exit 10
 esac
+
+# vim: ts=2:
