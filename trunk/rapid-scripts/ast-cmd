@@ -750,7 +750,7 @@ case "$1" in
 		if [ "$name" = '' ]; then
 			echo >&2 "missing trunk name"; usage; exit 1
 		fi
-		call_from=`echo $call_from | tr A-Z a-z | tr -d -c A-Za-z0-9`
+		call_from=`echo $call_from | tr A-Z a-z | tr -d -c ,A-Za-z0-9`
 		if [ "$call_from" = '' ]; then
 			echo >&2 "missing server extension number (-f)"; usage; exit 1
 		fi
@@ -787,26 +787,30 @@ case "$1" in
 				echo "canreinvite=no"
 			fi
       echo ''
-			echo "[$user]"
+			echo "[user-$name]"
 			echo ";This allows $name to place incoming calls to you"
 			echo "type=user"
-			echo "context=from-$name"
-			#echo "username=$in_name"
 			case "$server_type" in fwd|junction)
 				echo "auth=rsa"
 				echo "in_keys=$rsa_name"
 				;;
 			*)
+				echo "username=$user"
 				echo "secret=$pass";;
 			esac
+			echo "context=from-$name"
+			#echo "username=$in_name"
 			
 			echo "fromdomain=$server"
 			echo ";insecure=very"
 			print_codecs $server_type
-		) >$CFG_DIR/$type-phones.d/$user.conf
-		secure_modes $CFG_DIR/$type-phones.d/$user.conf
+		) >$CFG_DIR/$type-phones.d/trunk-$name.conf
+		secure_modes $CFG_DIR/$type-phones.d/trunk-$name.conf
 		chan_type=`echo $type| tr a-z A-Z`
-		prefix_len=`echo -n $call_from | wc -c`
+		if echo $call_from | grep -q , 
+		then prefix_len=`echo -n $call_from | cut -d, -f1 | wc -c`
+		else prefix_len=`echo -n $call_from | wc -c`
+		fi
 		case "$type" in sip)chan_type=SIP;;iax)chan_type=IAX2;;esac
 		(
 			# TODO: set CID and name before calling
@@ -854,4 +858,4 @@ case "$1" in
 			exit 10
 esac
 
-# vim: ts=2:
+# vim: ts=2 noexpandtab:

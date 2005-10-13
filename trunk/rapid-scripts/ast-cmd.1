@@ -167,29 +167,24 @@ set the context into which the trunk will ring, as well as for all the
 files generated. For an \fIIAX\fR trunk, The script generates the following 
 files:
 
-.I /etc/asterisk/iax-reg.d/\fBname\fI.conf
+.I /etc/asterisk/{iax,sip}-reg.d/\fBname\fI.conf
 
 .RS
 for registrating to the provider
 .RE
 
-.I /etc/asterisk/iax-phones.d/trunk-\fBname\fI.conf
+.I /etc/asterisk/{iax,sip}-phones.d/trunk-\fBname\fI.conf
 
 .RS
-The \fIIAX\fR peer needed to connect to the provider.
-.RE
-
-.I /etc/asterisk/iax-phones.d/\fBuser\fI.conf
-
-.RS
-The \fIIAX\fR user needed to authenticate calls from the provider.
-with a FWD connection, \fIfwdiax\fR is always used as the user here.
+The \fIIAX/SIP\fR peer needed to connect to the provider (\fBpeer-\fIname\fR)
+and the \fIIAX\fR user needed to authenticate calls from the provider
+(\fBuser-\fIname\fR).
 .RE
 
 .I /etc/asterisk/extensions.d/trunk-\fBname\fI.conf
 
 .RS
-A dialpan snippen: the context \fItrunk-name\fR that contains the 
+A dialpan snippet: the context \fItrunk-name\fR that contains the 
 required extensions to dial \fIto\fR the trunk using the prefix 
 \fIprefix\fR. Consider \fIinclude\fR-ing that context in other 
 contexts (e.g: \fIdefault\fR) to allow calls to the trunk.
@@ -203,6 +198,36 @@ A dialpan snippet: the context \fIfrom-name\fR into which calls
 fine-tune the "permissions" by including the relevant 
 that contains the required extensions to dial \fIto\fR the trunk 
 using the prefix \fIprefix\fR.
+.RE
+
+.B Options
+
+.I -f [LOCAL_PREFIX,][PREFIX]
+
+.RS
+This is the prefix this trunk will have in your dialplan. A "local prefix" 
+is chopped of the number before it is dialed: e.g: if you wish to use 9 
+for access to an external PBX through that trunk, you could use: 
+
+  -f 9,
+
+A prefix is part of the number that is dialed. If you want to dial all of 
+the numbers for prefix 42 through a certain service, use
+
+  -f 42
+
+You can combine them: -f 9,42 which will send to the trunk all the 
+numbers that begin with 942 but strip off the leading '9'.
+
+.I -u USERNAME
+: authenticate as USERNAME to the trunk.
+
+.I -p PASSWORD
+: authenticate using PASSWORD to the trunk.
+
+.I -s TRUNK_NAME
+: see below
+
 .RE
 
 .B Known trunks
@@ -259,9 +284,15 @@ you can use the command:
 an IAX connection to Junction Networks. After you register with them
 you can use the command:
 
-  ast-cmd -f \fIprefix\fR -u \fIuser\fR -p \fIpassword\fR -s junction add-trunk \fRname\fI
+  ast-cmd -f \fIprefix\fR -u \fIuser\fR -p \fIpassword\fR -s junction add-trunk \fIname\fR
 
   ast-cmd -f 835 -u junc-username -p xxxx -s junction add-trunk junc
+
+Note that the RSA key for Junction Networks is not yet included with 
+Xorcom Rapid, and thus you will need to fetch it:
+
+  cd /var/lib/asterisk/keys && wget http://www.jnctn.net/jnctn.pub
+
 .RE
 
 .B goiax
@@ -284,6 +315,20 @@ you can use the command:
 .B sip:\fIserver_address\fB , iax:\fIserver_address
 .RS
 Try to connect to an arbitrary SIP/IAX trunk. Should hopefully work.
+
+This is also useful for connecting to a second Asterisk server. Say you 
+have server1 and server2, where all the phones on server1 are in the 
+range 6500-6599 and no such phone exists in that range on server 1.
+So on server2 you run:
+
+  ast-cmd -u iax:server1 -p secret add-line
+
+  astererisk -rx reload
+
+And then on server 1:
+
+  ast-cmd -f 65 -u server1 -p secret -s iax:server2 add-trunk server2
+
 .RE
 
 So once you've run the command \fBadd-trunk\fR with the correct parameters, 
